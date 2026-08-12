@@ -1,0 +1,123 @@
+name: Matrix Build
+# Source: Custom example with proper licensing
+# Migrated from matrixbuilds/Jenkinsfile
+# Test case: Matrix builds across platforms
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+env:
+  REGISTRY: docker.example.com
+  IMAGE_NAME: myapp
+
+jobs:
+  build-test-package:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux, windows, macos]
+        java_version: ['8', '11', '17']
+        exclude:
+          - platform: macos
+            java_version: '8'
+        include:
+          - platform: linux
+            os: ubuntu-latest
+          - platform: windows
+            os: windows-latest
+          - platform: macos
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up JDK ${{ matrix.java_version }}
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java_version }}
+
+      - name: Set up Maven 3.8.1
+        uses: stCarolas/setup-maven@d6af6abeda15e98926a57b5aa970a96bb37f97d1 # v5
+        with:
+          maven-version: 3.8.1
+
+      - name: Build (Windows)
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: mvn clean compile
+
+      - name: Build (non-Windows)
+        if: matrix.platform != 'windows'
+        run: mvn clean compile
+
+      - name: Test (Windows)
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: mvn test
+
+      - name: Test (non-Windows)
+        if: matrix.platform != 'windows'
+        run: mvn test
+
+      - name: Publish test results
+        if: always()
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        with:
+          name: Maven Tests (${{ matrix.platform }}-jdk-${{ matrix.java_version }})
+          path: '**/surefire-reports/*.xml'
+          reporter: java-junit
+
+      - name: Package (Windows)
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: mvn package -DskipTests
+
+      - name: Package (non-Windows)
+        if: matrix.platform != 'windows'
+        run: mvn package -DskipTests
+
+      - name: Archive package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package-${{ matrix.platform }}-jdk-${{ matrix.java_version }}
+          path: target/*.jar
+
+  integration:
+    needs: build-test-package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+
+      - name: Integration
+        run: |
+          echo "Running integration tests across all platforms"
+          echo "Collecting artifacts from all matrix builds"
+          find . -name "*.jar" -type f
+
+  docker-build:
+    needs: integration
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [linux]
+        java_version: ['11', '17']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Docker Build
+        run: |
+          echo "Building Docker image for ${{ matrix.platform }}-${{ matrix.java_version }}"
+          docker build -t "${REGISTRY}/${IMAGE_NAME}:${{ matrix.platform }}-${{ matrix.java_version }}-${{ github.run_number }}" \
+                     --build-arg JAVA_VERSION="${{ matrix.java_version }}" \
+                     --build-arg PLATFORM="${{ matrix.platform }}" .
