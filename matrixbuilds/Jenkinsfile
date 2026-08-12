@@ -1,0 +1,149 @@
+<![CDATA[
+// Source: Custom example with proper licensing  
+// Test case: Matrix builds across platforms
+pipeline {
+    agent none
+    
+    environment {
+        REGISTRY = 'docker.example.com'
+        IMAGE_NAME = 'myapp'
+    }
+    
+    stages {
+        stage('Matrix Build') {
+            matrix {
+                axes {
+                    axis {
+                        name 'PLATFORM'
+                        values 'linux', 'windows', 'macos'
+                    }
+                    axis {
+                        name 'JAVA_VERSION'
+                        values 'jdk-8', 'jdk-11', 'jdk-17'
+                    }
+                }
+                excludes {
+                    exclude {
+                        axis {
+                            name 'PLATFORM'
+                            values 'macos'
+                        }
+                        axis {
+                            name 'JAVA_VERSION'
+                            values 'jdk-8'
+                        }
+                    }
+                }
+                stages {
+                    stage('Build') {
+                        agent {
+                            label "${PLATFORM}"
+                        }
+                        tools {
+                            jdk "${JAVA_VERSION}"
+                            maven 'maven-3.8.1'
+                        }
+                        steps {
+                            checkout scm
+                            script {
+                                if (PLATFORM == 'windows') {
+                                    bat 'mvn clean compile'
+                                } else {
+                                    sh 'mvn clean compile'
+                                }
+                            }
+                        }
+                    }
+                    
+                    stage('Test') {
+                        agent {
+                            label "${PLATFORM}"
+                        }
+                        tools {
+                            jdk "${JAVA_VERSION}"
+                            maven 'maven-3.8.1'
+                        }
+                        steps {
+                            script {
+                                if (PLATFORM == 'windows') {
+                                    bat 'mvn test'
+                                } else {
+                                    sh 'mvn test'
+                                }
+                            }
+                            publishTestResults testResultsPattern: '**/surefire-reports/*.xml'
+                        }
+                    }
+                    
+                    stage('Package') {
+                        agent {
+                            label "${PLATFORM}"
+                        }
+                        tools {
+                            jdk "${JAVA_VERSION}"
+                            maven 'maven-3.8.1'
+                        }
+                        steps {
+                            script {
+                                if (PLATFORM == 'windows') {
+                                    bat 'mvn package -DskipTests'
+                                } else {
+                                    sh 'mvn package -DskipTests'
+                                }
+                            }
+                            archiveArtifacts artifacts: 'target/*.jar', 
+                                           fingerprint: true,
+                                           classifier: "${PLATFORM}-${JAVA_VERSION}"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Integration') {
+            agent {
+                label 'docker'
+            }
+            steps {
+                echo "Running integration tests across all platforms"
+                sh '''
+                    echo "Collecting artifacts from all matrix builds"
+                    find . -name "*.jar" -type f
+                '''
+            }
+        }
+        
+        stage('Docker Build') {
+            when {
+                branch 'master'
+            }
+            agent {
+                label 'docker'
+            }
+            steps {
+                script {
+                    def platforms = ['linux']
+                    def javaVersions = ['jdk-11', 'jdk-17']
+                    
+                    for (platform in platforms) {
+                        for (javaVersion in javaVersions) {
+                            echo "Building Docker image for ${platform}-${javaVersion}"
+                            sh """
+                                docker build -t ${REGISTRY}/${IMAGE_NAME}:${platform}-${javaVersion}-${BUILD_NUMBER} \
+                                           --build-arg JAVA_VERSION=${javaVersion} \
+                                           --build-arg PLATFORM=${platform} .
+                            """
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo "Matrix build completed"
+        }
+    }
+}
+    ]]>
