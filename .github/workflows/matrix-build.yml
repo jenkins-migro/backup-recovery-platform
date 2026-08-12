@@ -9,6 +9,9 @@ on:
     branches:
       - master
 
+permissions:
+  contents: read
+
 env:
   REGISTRY: docker.example.com
   IMAGE_NAME: myapp

@@ -9,6 +9,9 @@ on:
     branches:
       - '**'
 
+permissions:
+  contents: read
+
 env:
   ANDROID_HOME: /opt/android-sdk
   GRADLE_OPTS: -Dorg.gradle.daemon=false
