@@ -1,0 +1,83 @@
+name: Laravel GitHub API
+# Source: https://github.com/faveosuite/faveo-invoicing-community (Educational Use)
+# Migrated from laravelgithubapi/Jenkinsfile
+# Test case: Laravel/PHP pipeline with MySQL database setup, testing, and GitHub API integration
+
+on:
+  pull_request:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+  statuses: write
+  pull-requests: write
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Composer Dump-Autoload
+        run: composer dump-autoload
+
+      - name: Database Setup & Testing
+        env:
+          DB_USER: ${{ secrets.MYSQL_USERNAME }}
+          DB_PASS: ${{ secrets.MYSQL_PASSWORD }}
+        run: |
+          BUILD_NUMBER="${{ github.run_number }}"
+
+          echo "Creating database billing_${BUILD_NUMBER}" && \
+          echo "CREATE DATABASE billing_${BUILD_NUMBER};" > "/tmp/billing_${BUILD_NUMBER}.sql" && \
+          echo "DROP DATABASE IF EXISTS billing_${BUILD_NUMBER};" >> "/tmp/billing_${BUILD_NUMBER}.sql" && \
+          mysql -h 127.0.0.1 -u "${DB_USER}" -p"${DB_PASS}" < "/tmp/billing_${BUILD_NUMBER}.sql" && \
+          php artisan optimize:clear && \
+          php artisan testing-setup --username="${DB_USER}" --****** --database="billing_${BUILD_NUMBER}" && \
+          COMPOSER_MEMORY_LIMIT=-1 php artisan test
+
+      - name: Update commit status
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_STATUS_TOKEN }}
+        run: |
+          STATUS="${{ job.status == 'success' && 'success' || 'failure' }}"
+          DESCRIPTION="${{ job.status == 'success' && 'Build successful' || 'Build failed' }}"
+          curl -u "x-access-token:${GITHUB_TOKEN}" \
+               -d "{\"state\": \"${STATUS}\", \"target_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\", \"description\": \"${DESCRIPTION}\", \"context\": \"GitHub Actions\"}" \
+               "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}"
+
+      - name: Close pull request on failure
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_STATUS_TOKEN }}
+        run: |
+          echo "Closing the PR due to build failure..."
+          curl -X PATCH -u "x-access-token:${GITHUB_TOKEN}" \
+               -d '{"state": "closed"}' \
+               "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}"
+
+      - name: Drop test database
+        if: always()
+        env:
+          DB_USER: ${{ secrets.MYSQL_USERNAME }}
+          DB_PASS: ${{ secrets.MYSQL_PASSWORD }}
+        run: |
+          BUILD_NUMBER="${{ github.run_number }}"
+          echo "Dropping database billing_${BUILD_NUMBER}" && \
+          mysql -h 127.0.0.1 -u "${DB_USER}" -p"${DB_PASS}" -e "DROP DATABASE IF EXISTS billing_${BUILD_NUMBER};" && \
+          rm -f "/tmp/billing_${BUILD_NUMBER}.sql"

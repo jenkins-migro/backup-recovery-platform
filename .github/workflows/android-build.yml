@@ -1,0 +1,82 @@
+name: Android Build
+# Source: https://github.com/jenkinsci/pipeline-examples (MIT License)
+# Migrated from androidbuild/Jenkinsfile
+# Test case: Android build with flavors based on branch name
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_HOME: /opt/android-sdk
+  GRADLE_OPTS: -Dorg.gradle.daemon=false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Setup
+        id: setup
+        run: |
+          echo "Android SDK: $ANDROID_HOME"
+          echo "Branch: ${GITHUB_REF_NAME}"
+
+          # Extract flavor from branch name (QA_flavorname)
+          if [[ "${GITHUB_REF_NAME}" =~ ^QA_(.+)$ ]]; then
+            echo "FLAVOR=${BASH_REMATCH[1]}" > flavor.properties
+            echo "Building flavor: ${BASH_REMATCH[1]}"
+          else
+            echo "FLAVOR=debug" > flavor.properties
+            echo "Default flavor: debug"
+          fi
+
+          FLAVOR=$(cut -d '=' -f2 flavor.properties)
+          echo "build_flavor=${FLAVOR}" >> "$GITHUB_OUTPUT"
+
+          # Capitalized form, used for Gradle task names (assembleDebug, testDebugUnitTest, etc.)
+          FLAVOR_CAP="$(tr '[:lower:]' '[:upper:]' <<< "${FLAVOR:0:1}")${FLAVOR:1}"
+          echo "build_flavor_cap=${FLAVOR_CAP}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: |
+          ./gradlew clean
+          ./gradlew assemble${{ steps.setup.outputs.build_flavor_cap }}
+
+      - name: Test
+        run: ./gradlew test${{ steps.setup.outputs.build_flavor_cap }}UnitTest
+
+      - name: Publish test results
+        if: always()
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        with:
+          name: Android Unit Tests
+          path: '**/TEST-*.xml'
+          reporter: java-junit
+
+      - name: Lint
+        run: ./gradlew lint${{ steps.setup.outputs.build_flavor_cap }}
+
+      - name: Archive lint report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-${{ steps.setup.outputs.build_flavor }}/lint-results.html
+
+      - name: Archive APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: app-${{ steps.setup.outputs.build_flavor }}-apk
+          path: app/build/outputs/apk/${{ steps.setup.outputs.build_flavor }}/*.apk
+
+      - name: Deploy
+        if: steps.setup.outputs.build_flavor != 'debug'
+        run: echo "Deploying ${{ steps.setup.outputs.build_flavor }} APK to test distribution"
+        # Add deployment steps here
